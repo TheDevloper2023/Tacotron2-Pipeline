@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-
+import math
 
 def get_mask_from_lengths(lengths, max_len=None):
     if max_len is None:
@@ -225,7 +225,7 @@ class GMMAttention(nn.Module):
         sigma = F.softplus(sigma_hat).unsqueeze(2) # [B, k, 1]
         current_mu = prev_mu + delta
         z = math.sqrt(2*math.pi) * sigma  # [B, k, 1]
-	log_energies = -torch.log(z) - 0.5 * (memory_time - current_mu)**2 / sigma**2  # [B, K, N]
+        log_energies = -torch.log(z) - 0.5 * (memory_time - current_mu)**2 / sigma**2  # [B, K, N]
         if mask is not None:
             log_energies.masked_fill_(mask.unsqueeze(1), -float(1e10))
         energies = w * F.softmax(log_energies, dim=-1)  # [B, K, N]
@@ -553,7 +553,7 @@ class Decoder(nn.Module):
         self.n_frames_per_step = hparams.n_frames_per_step
         self.max_decoder_steps = hparams.max_decoder_steps
         self.gate_threshold = hparams.gate_threshold
-        self.encoder_embedding_dim = hparams.encoder_embedding_dim
+        self.encoder_embedding_dim = hparams.encoder_embedding_dim + hparams.token_embedding_size + hparams.speaker_embedding_dim
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.attention_dim = hparams.attention_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
@@ -812,12 +812,19 @@ class Tacotron2(nn.Module):
         # self.encoder = CBHG(hparams)
         self.decoder = Decoder(hparams)
         self.postnet = ConvPostnet(hparams)
+        self.speaker_embedding = nn.Embedding(
+            hparams.n_speakers, hparams.speaker_embedding_dim)
 
-    def forward(self, phones, mels, text_lengths, output_lengths):
+    def forward(self, phones, mels, text_lengths, output_lengths, speaker_ids):
         encoder_outputs = self.encoder(phones, text_lengths)
         s_prob, e_prob = None, None
 
-        mel_outputs, gate_outputs, alignments = self.decoder(encoder_outputs, mels, memory_lengths=text_lengths)
+
+        speaker_embed = self.speaker_embedding(speaker_ids)  # [B, D]
+        speaker_embed = speaker_embed.unsqueeze(1).expand(-1, encoder_outputs.size(1), -1)  
+        encoder_outputs_with_speaker = torch.cat([encoder_outputs, speaker_embed], dim=-1)
+
+        mel_outputs, gate_outputs, alignments = self.decoder(encoder_outputs_with_speaker, mels, memory_lengths=text_lengths)
 
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
@@ -826,7 +833,13 @@ class Tacotron2(nn.Module):
 
     def inference(self, phones, speaker_id):
         encoder_outputs = self.encoder.inference(phones)
-        mel_outputs, gate_outputs, alignments = self.decoder.inference(encoder_outputs)
+        speaker_embed = self.speaker_embedding(speaker_id)  # [1, D]
+        speaker_embed = speaker_embed.unsqueeze(1).expand(-1, encoder_outputs.size(1), -1)
+        encoder_outputs_with_speaker = torch.cat([encoder_outputs, speaker_embed], dim=-1)
+        mel_outputs, gate_outputs, alignments = self.decoder.inference(encoder_outputs_with_speaker)
+
+
+
 
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet = mel_outputs + mel_outputs_postnet
