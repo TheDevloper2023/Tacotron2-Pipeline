@@ -101,8 +101,8 @@ def train(model, optimizer, learning_rate, train_set, num_gpus, rank, current_st
             gates = gates.cuda()
             speaker_ids = speaker_ids.cuda()
 
-            model_outputs = model(phones, mels, input_lengths, mel_lengths)
-            loss = criterion(global_step, model_outputs, [mels, gates, input_lengths, mel_lengths], speaker_ids, speaker_ids)
+            model_outputs = model(phones, mels, input_lengths, mel_lengths, speaker_ids)
+            loss = criterion(global_step, model_outputs, [mels, gates, input_lengths, mel_lengths], speaker_ids)
 
             running_loss += reduce_tensor(loss.data, num_gpus).item() if hp.distributed_run else loss.item()
             loss.backward()
@@ -139,7 +139,7 @@ def create_gta_features(model, train_set, save_path):
         # speaker_ids = speaker_ids.cuda()
         model.eval()
         with torch.no_grad():
-            model_outputs = model(phones, mels, input_lengths, mel_lengths)
+            model_outputs = model(phones, mels, input_lengths, mel_lengths, speaker_ids)
         gta = model_outputs[1].cpu().numpy()
         for j in range(len(ids)):
             np.save(os.path.join(save_path, ids[j]), gta[j][:, :mel_lengths[j]])
@@ -185,6 +185,16 @@ if __name__ == "__main__":
     if args.warm_start is not None:
         print("warming start...")
         checkpoint_dict = torch.load(args.warm_start, map_location='cpu')
+        model_dict = checkpoint_dict['state_dict']
+        ignore_layers = hp.ignore_layers
+
+        if len(ignore_layers) > 0:
+            model_dict = {k: v for k, v in model_dict.items()
+                      if k not in ignore_layers}
+            dummy_dict = model.state_dict()
+            dummy_dict.update(model_dict)
+            model_dict = dummy_dict
+        
         model.load_state_dict(checkpoint_dict['state_dict'])
 
     # print model parameters
